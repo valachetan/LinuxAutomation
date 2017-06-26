@@ -1,0 +1,128 @@
+---
+- hosts: all
+  become: true
+  vars:
+    admin_group: 'security'
+    users:
+      - {name: ansible, state: present}
+      - {name: chetanvala, state: present}
+      - {name: darshan.raghwani, state: present}
+
+  tasks:
+    - import_tasks: osversion1.yml
+    - name: Make sure we can connect
+      ping:
+
+    - name: Update the yum cache
+      yum:
+        name: '*'
+        state: latest
+      when: ansible_distribution == 'CentOS'
+
+    - name: Install the necessary daemons
+      yum: name={{item}} state=installed
+      with_items:
+        - net-snmp
+
+    - name: Copy across the new snmpd.conf file
+      template:
+        src: templates/daemons/snmpd.conf
+        dest: /etc/snmp
+      notify: restart snmpd
+
+    - name: Copy Splunk RPM file to server
+      copy:
+        src: files/splunkforwarder-6.6.1-aeae3fe0c5af-linux-2.6-x86_64.rpm
+        dest: /tmp/splunkforwarder-6.6.1-aeae3fe0c5af-linux-2.6-x86_64.rpm
+
+    - name: Install Splunk RPM
+      yum:
+        name: /tmp/splunkforwarder-6.6.1-aeae3fe0c5af-linux-2.6-x86_64.rpm
+        state: present
+
+    - name: Create the directory for the deployment client configuration
+      file: dest=/opt/splunkforwarder/etc/apps/sophos_all_deploymentclient/local state=directory
+
+    - name: Copy Splunk deplyoment.conf file
+      copy:
+        src: files/deploymentclient.conf
+        dest: /opt/splunkforwarder/etc/apps/sophos_all_deploymentclient/local/deploymentclient.conf
+
+    - name: Generate new Splunk admin password
+      command: openssl rand -hex 7 creates=/root/.splunkpw
+      register: splunk_new_pass
+
+    - name: Write the new password to a file
+      copy: content="{{splunk_new_pass.stdout}}" dest=/root/.splunkpw
+      when: splunk_new_pass.changed
+
+    - name: Start the Splunk daemon
+      action: shell /opt/splunkforwarder/bin/splunk start --accept-license
+      when: splunk_new_pass.changed
+
+    - name: Set the new Splunk admin password
+      action: shell /opt/splunkforwarder/bin/splunk edit user admin -auth admin:changeme -role admin -password {{splunk_new_pass.stdout}}
+      when: splunk_new_pass.changed
+
+    - name: Set Splunk to auto start on boot
+      action: shell /opt/splunkforwarder/bin/splunk enable boot-start
+      when: splunk_new_pass.changed
+
+    - name: Copy Sophos AV Bash file to server
+      copy:
+        src: files/SophosInstall.sh
+        dest: /tmp/SophosInstall.sh
+        mode: 0755
+      when: splunk_new_pass.changed
+
+    - name: Run Sophos AV Bash file on Server
+      shell: /tmp/SophosInstall.sh >> /var/log/sophosavinstall.log
+      when: splunk_new_pass.changed
+
+    - name: Add Security Group
+      group:
+        name: security
+        state: present
+
+    - name: Check users
+      user: name="{{item.name}}" state="{{item.state}}" group="{{admin_group}}"
+      with_items: "{{ users }}"
+
+    - name: Add Users In Sudo Group
+      lineinfile:
+        dest: /etc/sudoers
+        state: present
+        regexp: '^%security'
+        line: '%security ALL=(ALL) NOPASSWD: ALL'
+
+    - name: Add public keys
+      authorized_key: user="{{item.name}}"
+                      key="{{ lookup('file', 'files/sshkeys/'+item.name+'.pub') }}"
+                      state="{{item.state}}"
+                      exclusive=True
+      with_items: "{{ users }}"
+      when: item.state == "present"
+
+    - name: Check SNMPD service started
+      service: name=snmpd state=started
+
+    - name: Check Splunk service started
+      service: name=splunk state=started
+
+    - name: Check Sophos AV rms service started
+      service: name=sav-rms state=started
+
+    - name: Check Sophos AV protect service started
+      service: name=sav-protect state=started
+
+  handlers:
+    - name: restart snmpd
+      service: name=snmpd state=restarted
+    - name: Save IPTABLES
+      command: service iptables save
+      args:
+        warn: no
+      listen: "restart iptables"
+    - name: Restart IPTABLES daemon
+      action: service name=iptables state=restarted
+      listen: "restart iptables"
