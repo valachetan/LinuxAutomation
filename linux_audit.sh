@@ -228,6 +228,22 @@ audit_vulnerabilities() {
     fi
 }
 
+# --- 7. Git Integration (Optional) ---
+push_report_to_git() {
+    if [ -d ".git" ]; then
+        echo -e "\n${YELLOW}[ Git Integration ]${NC}"
+        read -p "Do you want to commit and push the audit report to the current repository? (y/n): " PUSH_CONFIRM
+        if [[ "$PUSH_CONFIRM" =~ ^[Yy]$ ]]; then
+            git add "$REPORT_FILE"
+            git commit -m "chore: Add security audit report for $TIMESTAMP"
+            git push origin $(git rev-parse --abbrev-ref HEAD)
+            log_pass "Report pushed to Git successfully."
+        else
+            echo "Skipping Git push."
+        fi
+    fi
+}
+
 # --- Execution ---
 audit_iam
 audit_hardening
@@ -235,6 +251,7 @@ audit_logging
 audit_network
 audit_filesystem
 audit_vulnerabilities
+push_report_to_git
 
 echo -e "\n================================================================================"
 echo "Audit Complete."
